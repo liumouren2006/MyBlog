@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fourier Series Data Visualization</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #1a1a1a; color: #eee; overflow: hidden; }
+        canvas { cursor: crosshair; background: #0b0b12; touch-action: none; }
+        .controls { background: rgba(20, 20, 25, 0.95); backdrop-filter: blur(10px); border-bottom: 1px solid #333; }
+        .hide { display: none; }
+        .running-btn { background-color: #ef4444 !important; border-color: #ef4444 !important; color: white !important;}
+        input[type="range"] { accent-color: #ec4899; }
+        input[type="file"]::file-selector-button {
+            background-color: #4b5563; color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; transition: background 0.2s;
+        }
+        input[type="file"]::file-selector-button:hover { background-color: #374151; }
+    </style>
+</head>
+<body class="flex flex-col h-screen">
+
+    <div class="controls p-4 grid grid-cols-1 md:grid-cols-5 gap-4 text-sm shadow-lg z-10">
+        <!-- 基础控制 -->
+        <div class="space-y-2">
+            <div class="flex gap-2">
+                <button id="btn-draw" class="px-4 py-2 bg-blue-600 rounded hover:bg-blue-500 transition-all w-full font-medium">手动绘制</button>
+                <button id="btn-start" class="px-4 py-2 border border-blue-500 text-blue-400 rounded hover:bg-blue-600 hover:text-white transition-all w-full font-bold">START</button>
+            </div>
+            <div class="flex gap-2">
+                <button class="preset-btn px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs transition" data-target="heart">心形线</button>
+                <button class="preset-btn px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs transition" data-target="infinity">无限号</button>
+            </div>
+        </div>
+
+        <!-- 数据导入 -->
+        <div class="space-y-2 p-2 bg-gray-800/50 rounded border border-gray-700 flex flex-col justify-center">
+            <label class="block text-xs text-gray-400 font-semibold mb-1">导入外部坐标点阵 (JSON/CSV)</label>
+            <input type="file" id="file-import" accept=".json,.csv" class="w-full text-xs text-gray-300">
+        </div>
+
+        <!-- 调节参数 -->
+        <div class="space-y-1 flex flex-col justify-center">
+            <div class="flex justify-between text-xs text-gray-400">
+                <label>演化速度</label><span id="val-speed">1</span>
+            </div>
+            <input type="range" id="slider-speed" min="1" max="10" value="1" class="w-full">
+            <div class="flex justify-between text-xs text-gray-400 mt-1">
+                <label>轨迹粗细</label><span id="val-stroke">2</span>
+            </div>
+            <input type="range" id="slider-stroke" min="1" max="5" value="2" class="w-full">
+        </div>
+
+        <!-- 显示设置 -->
+        <div class="flex flex-col justify-center space-y-2 pl-2">
+            <label class="flex items-center gap-2 cursor-pointer text-gray-300 hover:text-white">
+                <input type="checkbox" id="check-circle" checked class="w-4 h-4 rounded text-pink-500 focus:ring-pink-500"> 显示傅里叶本轮
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer text-gray-300 hover:text-white">
+                <input type="checkbox" id="check-loop"> 轨迹保留(不清屏)
+            </label>
+        </div>
+
+        <!-- 录制设置 -->
+        <div class="space-y-2">
+            <div class="flex gap-1">
+                <input type="number" id="video-width" placeholder="W" value="1920" class="w-1/3 bg-gray-800 px-2 py-1 rounded text-center border border-gray-600 focus:border-pink-500 outline-none">
+                <input type="number" id="video-height" placeholder="H" value="1080" class="w-1/3 bg-gray-800 px-2 py-1 rounded text-center border border-gray-600 focus:border-pink-500 outline-none">
+                <input type="number" id="video-fps" placeholder="FPS" value="60" class="w-1/3 bg-gray-800 px-2 py-1 rounded text-center border border-gray-600 focus:border-pink-500 outline-none">
+            </div>
+            <button id="btn-export" class="w-full py-1.5 bg-pink-600 hover:bg-pink-500 rounded font-bold transition-all shadow-lg">导出 WebM 视频</button>
+        </div>
+    </div>
+
+    <div class="flex-grow relative overflow-hidden flex items-center justify-center">
+        <canvas id="canvas"></canvas>
+    </div>
+
+    <script>
+        /** * ==========================================
+         * 数学建模与核心算法层 (Core Math & Models)
+         * ==========================================
+         */
+        class Complex {
+            constructor(re, im) { this.re = re; this.im = im; }
+            add(other) { return new Complex(this.re + other.re, this.im + other.im); }
+            multiply(other) {
+                return new Complex(this.re * other.re - this.im * other.im, this.re * other.im + this.im * other.re);
+            }
+            divide(other) {
+                const den = other.re * other.re + other.im * other.im;
+                return new Complex((this.re * other.re + this.im * other.im) / den, (this.im * other.re - this.re * other.im) / den);
+            }
+            amplitude() { return Math.sqrt(this.re * this.re + this.im * this.im); }
+            phase() { return Math.atan2(this.im, this.re); }
+        }
+
+        const computeDFT = (x) => {
+            const X = [];
+            const N = x.length;
+            for (let k = 0; k < N; k++) {
+                let sum = new Complex(0, 0);
+                for (let n = 0; n < N; n++) {
+                    const phi = (2 * Math.PI * k * n) / N;
+                    // e^(-i * phi) = cos(phi) - i*sin(phi)
+                    const expTerm = new Complex(Math.cos(phi), -Math.sin(phi));
+                    sum = sum.add(x[n].multiply(expTerm));
+                }
+                sum = sum.divide(new Complex(N, 0));
+                
+               
+                // 确保连续时间演化时，高频分量被正确识别为反向旋转的负频率
+                let freq = k > N / 2 ? k - N : k;
+                
+                X[k] = { re: sum.re, im: sum.im, freq: freq, amp: sum.amplitude(), phase: sum.phase() };
+            }
+            // 降序排序：确保大圆（主频率）在外侧，小圆在末端
+            return X.sort((a, b) => b.amp - a.amp);
+        };
+
+        // 数据预处理：几何中心对齐与自适应缩放
+        const normalizePath = (rawPath) => {
+            if (!rawPath || rawPath.length === 0) return [];
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            rawPath.forEach(p => {
+                if (p.x < minX) minX = p.x;
+                if (p.x > maxX) maxX = p.x;
+                if (p.y < minY) minY = p.y;
+                if (p.y > maxY) maxY = p.y;
+            });
+            
+            const cx = (minX + maxX) / 2;
+            const cy = (minY + maxY) / 2;
+            const w = maxX - minX;
+            const h = maxY - minY;
+            
+            // 计算缩放比例，使得图形占据画布高度的 60%
+            const targetHeight = canvas.height * 0.6;
+            const scale = (h > 0) ? (targetHeight / h) : 1;
+
+            return rawPath.map(p => ({
+                x: (p.x - cx) * scale,
+                y: (p.y - cy) * scale
+            }));
+        };
+
+        /** * ==========================================
+         * 预设数据集 (Predefined Datasets)
+         * ==========================================
+         */
+        const PREDEFINED_PATHS = {
+            heart: (() => {
+                let p = [];
+                for (let t = 0; t < Math.PI * 2; t += 0.05) {
+                    p.push({
+                        x: 16 * Math.pow(Math.sin(t), 3),
+                        y: -(13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t))
+                    });
+                }
+                return p;
+            })(),
+            infinity: (() => {
+                let p = [];
+                for (let t = 0; t < Math.PI * 2; t += 0.05) {
+                    const denom = 1 + Math.pow(Math.sin(t), 2);
+                    p.push({
+                        x: (Math.cos(t)) / denom,
+                        y: (Math.sin(t) * Math.cos(t)) / denom
+                    });
+                }
+                return p;
+            })()
+        };
+
+        /** * ==========================================
+         * 状态机与渲染引擎 (State & Renderer)
+         * ==========================================
+         */
+        const canvas = document.querySelector("#canvas");
+        const ctx = canvas.getContext("2d");
+        
+        let path = [...PREDEFINED_PATHS.heart];
+        let fourierX = [];
+        let graphPoints = [];
+        
+        let isRunning = false;
+        let time = 0;
+        let speed = 1;
+        let lineStroke = 2;
+        let showCircle = true;
+        let showLoop = false;
+        let animationFrameId;
+
+        // 录制器状态
+        let mediaRecorder;
+        let recordedChunks = [];
+        let isRecording = false;
+
+        const resizeCanvas = () => {
+            if(isRecording) return; // 录制期间锁定分辨率
+            const controlsRect = document.querySelector('.controls').getBoundingClientRect();
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight - controlsRect.height;
+        };
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        const prepareDFT = () => {
+            // 对外部/内置路径进行标准化处理
+            const normalized = normalizePath(path);
+            let complexPath = normalized.map(p => new Complex(p.x, p.y));
+            fourierX = computeDFT(complexPath);
+        };
+
+        const drawEpicycles = (cx, cy, rotation, fourier) => {
+            let x = cx;
+            let y = cy;
+            for (let i = 0; i < fourier.length; i++) {
+                const prevX = x;
+                const prevY = y;
+                const freq = fourier[i].freq;
+                const radius = fourier[i].amp;
+                const phase = fourier[i].phase;
+
+                // 连续时间演化方程
+                x += radius * Math.cos(freq * time + phase + rotation);
+                y += radius * Math.sin(freq * time + phase + rotation);
+
+                // 滤除极小的视觉干扰圆
+                if (showCircle && radius > 0.5) {
+                    ctx.beginPath();
+                    ctx.strokeStyle = "rgba(75, 85, 99, 0.4)"; // 深灰色半透明圆环
+                    ctx.lineWidth = 3;
+                    ctx.arc(prevX, prevY, radius, 0, 2 * Math.PI);
+                    ctx.stroke();
+                }
+                
+                // 绘制半径向量
+                ctx.beginPath();
+                ctx.strokeStyle = "rgba(156, 163, 175, 0.6)"; // 浅灰向量
+                ctx.lineWidth = 1.5;
+                ctx.moveTo(prevX, prevY);
+                ctx.lineTo(x, y);
+                ctx.stroke();
+            }
+            return { x, y };
+        };
+
+        const renderFrame = () => {
+            if (!showLoop) {
+                ctx.fillStyle = "#0b0b12";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+            }
+
+            // 画布几何中心
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+
+            // 叠加所有频率分量，获取矢量末端坐标
+            const point = drawEpicycles(centerX, centerY, 0, fourierX);
+            graphPoints.push(point);
+
+            // 绘制演化轨迹
+            ctx.beginPath();
+            ctx.strokeStyle = "#ec4899"; // 亮粉色主轨迹
+            ctx.lineWidth = lineStroke;
+            ctx.lineJoin = "round";
+            ctx.lineCap = "round";
+            
+            for (let i = 0; i < graphPoints.length; i++) {
+                if (i === 0) ctx.moveTo(graphPoints[i].x, graphPoints[i].y);
+                else ctx.lineTo(graphPoints[i].x, graphPoints[i].y);
+            }
+            ctx.stroke();
+
+            // 时间步长推进
+            const dt = (2 * Math.PI) / fourierX.length;
+            time += dt;
+
+            // 检查是否完成一个完整周期
+            if (time >= 2 * Math.PI) {
+                time = 0;
+                if (!showLoop) graphPoints = [];
+                if (isRecording) {
+                    stopRecording();
+                }
+            }
+        };
+
+        const renderLoop = () => {
+            if (!isRunning) return;
+            for (let i = 0; i < speed; i++) {
+                renderFrame();
+            }
+            animationFrameId = requestAnimationFrame(renderLoop);
+        };
+
+        /** * ==========================================
+         * 数据导入与交互系统 (I/O & Events)
+         * ==========================================
+         */
+        
+        // 文件解析器
+        document.getElementById('file-import').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            const reader = new FileReader();
+            reader.onload = (evt) => {
+                try {
+                    const content = evt.target.result;
+                    let newPath = [];
+                    
+                    if (file.name.toLowerCase().endsWith('.json')) {
+                        const data = JSON.parse(content);
+                        if(Array.isArray(data) && data.length > 0 && data[0].x !== undefined) {
+                            newPath = data;
+                        }
+                    } else if (file.name.toLowerCase().endsWith('.csv')) {
+                        const lines = content.split(/\r?\n/);
+                        lines.forEach(line => {
+                            const parts = line.split(',');
+                            if (parts.length >= 2) {
+                                const px = parseFloat(parts[0]);
+                                const py = parseFloat(parts[1]);
+                                if (!isNaN(px) && !isNaN(py)) {
+                                    newPath.push({ x: px, y: py });
+                                }
+                            }
+                        });
+                    }
+
+                    if (newPath.length > 10) {
+                        path = newPath;
+                        resetSimulation();
+                        alert(`成功导入 ${path.length} 个数据点！`);
+                    } else {
+                        throw new Error("有效数据点不足");
+                    }
+                } catch (err) {
+                    alert("文件解析失败！\nJSON格式应为: [{\"x\":1, \"y\":2}, ...]\nCSV格式应为每行: 1.0, 2.0");
+                }
+            };
+            reader.readAsText(file);
+        });
+
+        // 控制面板事件绑定
+        const resetSimulation = () => {
+            isRunning = false;
+            cancelAnimationFrame(animationFrameId);
+            time = 0;
+            graphPoints = [];
+            document.getElementById('btn-start').innerText = "START";
+            document.getElementById('btn-start').classList.remove("running-btn");
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        };
+
+        document.getElementById('btn-start').addEventListener('click', (e) => {
+            if (!path || path.length === 0) return alert("当前无路径数据！");
+            
+            isRunning = !isRunning;
+            const btn = e.target;
+            
+            if (isRunning) {
+                btn.innerText = "STOP";
+                btn.classList.add("running-btn");
+                if(fourierX.length === 0 || time === 0) {
+                    prepareDFT();
+                }
+                renderLoop();
+            } else {
+                btn.innerText = "START";
+                btn.classList.remove("running-btn");
+                cancelAnimationFrame(animationFrameId);
+            }
+        });
+
+        document.querySelectorAll('.preset-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const targetId = e.target.getAttribute('data-target');
+                if (PREDEFINED_PATHS[targetId]) {
+                    path = [...PREDEFINED_PATHS[targetId]];
+                    resetSimulation();
+                }
+            });
+        });
+
+        document.getElementById('slider-speed').addEventListener('input', (e) => {
+            speed = parseInt(e.target.value);
+            document.getElementById('val-speed').innerText = speed;
+        });
+
+        document.getElementById('slider-stroke').addEventListener('input', (e) => {
+            lineStroke = parseInt(e.target.value);
+            document.getElementById('val-stroke').innerText = lineStroke;
+        });
+
+        document.getElementById('check-circle').addEventListener('change', (e) => {
+            showCircle = e.target.checked;
+        });
+
+        document.getElementById('check-loop').addEventListener('change', (e) => {
+            showLoop = e.target.checked;
+        });
+
+        // 录制视频管线
+        const startRecording = () => {
+            if (!path || path.length === 0) return alert("请先准备路径！");
+            
+            const vw = parseInt(document.getElementById('video-width').value) || 1920;
+            const vh = parseInt(document.getElementById('video-height').value) || 1080;
+            const fps = parseInt(document.getElementById('video-fps').value) || 60;
+
+            // 强制切换到导出分辨率
+            canvas.width = vw;
+            canvas.height = vh;
+            
+            resetSimulation();
+            prepareDFT();
+
+            const stream = canvas.captureStream(fps);
+            mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm; codecs=vp9' });
+            recordedChunks = [];
+
+            mediaRecorder.ondataavailable = (e) => {
+                if (e.data.size > 0) recordedChunks.push(e.data);
+            };
+
+            mediaRecorder.onstop = () => {
+                const blob = new Blob(recordedChunks, { type: "video/webm" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `Fourier_Output_${vw}x${vh}.webm`;
+                a.click();
+                URL.revokeObjectURL(url);
+                resizeCanvas(); // 恢复视口大小
+            };
+
+            isRecording = true;
+            isRunning = true;
+            document.getElementById('btn-export').innerText = "录制中... (等一圈)";
+            document.getElementById('btn-export').classList.add("bg-red-700");
+            
+            mediaRecorder.start();
+            renderLoop();
+        };
+
+        const stopRecording = () => {
+            isRecording = false;
+            isRunning = false;
+            cancelAnimationFrame(animationFrameId);
+            mediaRecorder.stop();
+            const btn = document.getElementById('btn-export');
+            btn.innerText = "导出 WebM 视频";
+            btn.classList.remove("bg-red-700");
+        };
+
+        document.getElementById('btn-export').addEventListener('click', () => {
+            if (isRecording) stopRecording();
+            else startRecording();
+        });
+
+        // 简易手绘追踪系统
+        let isDrawingMode = false;
+        let isMouseDown = false;
+        let tempRawPath = [];
+
+        document.getElementById('btn-draw').addEventListener('click', (e) => {
+            resetSimulation();
+            isDrawingMode = true;
+            tempRawPath = [];
+            ctx.fillStyle = "#1e1e24";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = "#a1a1aa";
+            ctx.font = "20px sans-serif";
+            ctx.textAlign = "center";
+            ctx.fillText("请在画布上按住鼠标左键并拖动进行绘制", canvas.width / 2, canvas.height / 2);
+        });
+
+        canvas.addEventListener('mousedown', (e) => {
+            if (!isDrawingMode) return;
+            isMouseDown = true;
+            tempRawPath = [];
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (!isDrawingMode || !isMouseDown) return;
+            const rect = canvas.getBoundingClientRect();
+            // 获取相对于画布左上角的原始坐标
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            tempRawPath.push({x, y});
+            
+            ctx.fillStyle = "#fff";
+            ctx.fillRect(x, y, 2, 2);
+        });
+
+        canvas.addEventListener('mouseup', () => {
+            if (!isDrawingMode) return;
+            isMouseDown = false;
+            isDrawingMode = false;
+            if (tempRawPath.length > 10) {
+                // 手绘数据将同样经过 normalizePath 的居中与自适应处理
+                path = [...tempRawPath];
+                alert(`绘制完成，采集了 ${path.length} 个点。点击 START 即可重构。`);
+            }
+        });
+
+    </script>
+</body>
+</html>
