@@ -77,10 +77,7 @@
     </div>
 
     <script>
-        /** * ==========================================
-         * 数学建模与核心算法层 (Core Math & Models)
-         * ==========================================
-         */
+        //算法
         class Complex {
             constructor(re, im) { this.re = re; this.im = im; }
             add(other) { return new Complex(this.re + other.re, this.im + other.im); }
@@ -144,10 +141,7 @@
             }));
         };
 
-        /** * ==========================================
-         * 预设数据集 (Predefined Datasets)
-         * ==========================================
-         */
+        //预设数据集
         const PREDEFINED_PATHS = {
             heart: (() => {
                 let p = [];
@@ -172,10 +166,7 @@
             })()
         };
 
-        /** * ==========================================
-         * 状态机与渲染引擎 (State & Renderer)
-         * ==========================================
-         */
+        //状态机与渲染
         const canvas = document.querySelector("#canvas");
         const ctx = canvas.getContext("2d");
         
